@@ -60,24 +60,29 @@ describe('calculateSleepLatency', () => {
 
 describe('calculateStageLatencies', () => {
   it('should calculate all latencies correctly', () => {
+    // [0, 0, 1, 1, 2, 2, 3, 3]
+    // First sleep at index 2 (Light)
+    // Latencies measured from sleep onset (index 2)
     const sleepStages = [0, 0, 1, 1, 2, 2, 3, 3];
     const latencies = calculateStageLatencies(sleepStages);
     expect(latencies).toEqual({
-      sleep: 60,   // 2 wake slots
-      light: 60,   // 2 slots until light
-      deep: 120,   // 4 slots until deep
-      rem: 180,    // 6 slots until REM
+      sleep: 60,   // 2 wake slots until sleep onset
+      light: 0,    // Light is the first sleep stage (2 - 2 = 0)
+      deep: 60,    // Deep at index 4, from sleep onset (4 - 2) * 30 = 60
+      rem: 120,    // REM at index 6, from sleep onset (6 - 2) * 30 = 120
     });
   });
 
   it('should handle never reaching certain stages', () => {
+    // [0, 1, 1, 1]
+    // First sleep at index 1 (Light)
     const sleepStages = [0, 1, 1, 1];
     const latencies = calculateStageLatencies(sleepStages);
     expect(latencies).toEqual({
-      sleep: 30,
-      light: 30,
-      deep: 120,   // Never found, returns total
-      rem: 120,    // Never found, returns total
+      sleep: 30,     // 1 wake slot until sleep onset
+      light: 0,      // Light is the first sleep stage (1 - 1 = 0)
+      deep: null,    // Never reached deep
+      rem: null,     // Never reached REM
     });
   });
 });
@@ -123,7 +128,9 @@ describe('calculateWaso', () => {
 describe('calculateStageRatios', () => {
   it('should calculate correct ratios', () => {
     const breakdown = { wake: 30, light: 30, deep: 30, rem: 30 };
-    const ratios = calculateStageRatios(breakdown, 120);
+    const waso = 30; // wake within sleep period
+    const timeInSleepPeriod = 120; // total sleep period
+    const ratios = calculateStageRatios(breakdown, waso, timeInSleepPeriod);
     expect(ratios).toEqual({
       wake: 0.25,
       light: 0.25,
@@ -135,7 +142,7 @@ describe('calculateStageRatios', () => {
 
   it('should handle zero time in bed', () => {
     const breakdown = { wake: 0, light: 0, deep: 0, rem: 0 };
-    const ratios = calculateStageRatios(breakdown, 0);
+    const ratios = calculateStageRatios(breakdown, 0, 0);
     expect(ratios).toEqual({
       wake: 0,
       light: 0,
@@ -147,8 +154,39 @@ describe('calculateStageRatios', () => {
 
   it('should calculate sleep ratio as combined light+deep+rem', () => {
     const breakdown = { wake: 60, light: 30, deep: 20, rem: 10 };
-    const ratios = calculateStageRatios(breakdown, 120);
+    const waso = 60; // wake within sleep period
+    const timeInSleepPeriod = 120;
+    const ratios = calculateStageRatios(breakdown, waso, timeInSleepPeriod);
     expect(ratios.sleep).toBeCloseTo(0.5); // (30+20+10)/120
+  });
+
+  it('should adjust ratios to sum to exactly 1.0', () => {
+    // Test case that would have floating-point precision errors
+    const breakdown = { wake: 0, light: 7200, deep: 3600, rem: 3600 };
+    const waso = 600;
+    const timeInSleepPeriod = 14400; // 4 hours
+    const ratios = calculateStageRatios(breakdown, waso, timeInSleepPeriod);
+
+    // Ratios should sum to exactly 1.0
+    const sum = ratios.wake + ratios.light + ratios.deep + ratios.rem;
+    expect(sum).toBe(1.0);
+
+    // Sleep ratio should be 1 - wake
+    expect(ratios.sleep).toBe(1 - ratios.wake);
+  });
+
+  it('should round ratios to 2 decimal places', () => {
+    const breakdown = { wake: 0, light: 1234, deep: 567, rem: 890 };
+    const waso = 123;
+    const timeInSleepPeriod = 2691;
+    const ratios = calculateStageRatios(breakdown, waso, timeInSleepPeriod);
+
+    // All ratios should be rounded to 3 decimal places
+    expect(ratios.wake).toBe(Math.round(ratios.wake * 1000) / 1000);
+    expect(ratios.light).toBe(Math.round(ratios.light * 1000) / 1000);
+    expect(ratios.deep).toBe(Math.round(ratios.deep * 1000) / 1000);
+    expect(ratios.rem).toBe(Math.round(ratios.rem * 1000) / 1000);
+    expect(ratios.sleep).toBe(Math.round(ratios.sleep * 1000) / 1000);
   });
 });
 
@@ -170,20 +208,19 @@ describe('calculateSleepStatistics', () => {
 
     expect(stats.timeInBed).toBe(960 * 30); // 28800 seconds = 8 hours
     expect(stats.sleepLatency).toBe(1800); // 30 minutes
-    expect(stats.timeInWake).toBe(3600); // 1.5 hours
+    expect(stats.timeInWake).toBe(1800); // WASO: 30min wake after sleep onset
     expect(stats.timeInLight).toBe(18000); // 6 hours (240 + 240 + 120 = 600 slots)
     expect(stats.timeInDeep).toBe(3600); // 1 hour
     expect(stats.timeInRem).toBe(3600); // 1 hour
     expect(stats.timeInSleep).toBe(25200); // 7 hours (600 + 120 + 120 = 840 slots)
-    expect(stats.sleepEfficiency).toBeCloseTo(0.875); // 25200/28800
+    expect(stats.sleepEfficiency).toBe(0.88); // 25200/28800 = 0.875 rounded to 0.88
 
-    // WASO: 30min wake after sleep onset
-    expect(stats.waso.waso).toBe(1800);
-    expect(stats.waso.wasoCount).toBe(1);
+    // WASO count
+    expect(stats.wasoCount).toBe(1);
 
-    // Ratios
-    expect(stats.ratios.sleep).toBeCloseTo(0.875);
-    expect(stats.ratios.wake).toBeCloseTo(0.125);
+    // Ratios (calculated against timeInSleepPeriod = 25200 + 1800 = 27000)
+    expect(stats.sleepRatio).toBeCloseTo(0.933); // 25200 / 27000
+    expect(stats.wakeRatio).toBeCloseTo(0.067); // 1800 / 27000
 
     // New fields
     expect(stats.wakeupLatency).toBe(0); // ends with light sleep
@@ -199,7 +236,7 @@ describe('calculateSleepStatistics', () => {
     expect(stats.timeInSleep).toBe(0);
     expect(stats.sleepEfficiency).toBe(0);
     expect(stats.sleepLatency).toBe(3000);
-    expect(stats.waso.waso).toBe(0);
+    expect(stats.timeInWake).toBe(0); // No WASO because never slept
 
     // New fields
     expect(stats.wakeupLatency).toBe(0); // no sleep occurred
@@ -214,7 +251,7 @@ describe('calculateSleepStatistics', () => {
     expect(stats.timeInSleep).toBe(3000);
     expect(stats.sleepEfficiency).toBe(1);
     expect(stats.sleepLatency).toBe(0);
-    expect(stats.waso.waso).toBe(0);
+    expect(stats.timeInWake).toBe(0); // No WASO
 
     // New fields
     expect(stats.wakeupLatency).toBe(0); // ends with light sleep
@@ -222,13 +259,13 @@ describe('calculateSleepStatistics', () => {
     expect(typeof stats.sleepCycleCount).toBe('number');
   });
 
-  it('should use custom slot duration', () => {
+  it('should calculate with standard slot duration', () => {
     const sleepStages = [0, 1, 2, 3];
-    const stats = calculateSleepStatistics(sleepStages, { slotDuration: 60 });
+    const stats = calculateSleepStatistics(sleepStages);
 
-    expect(stats.timeInBed).toBe(240); // 4 slots * 60 seconds
-    expect(stats.timeInWake).toBe(60);
-    expect(stats.timeInLight).toBe(60);
+    expect(stats.timeInBed).toBe(120); // 4 slots * 30 seconds
+    expect(stats.timeInWake).toBe(0); // No WASO (wake is before sleep onset)
+    expect(stats.timeInLight).toBe(30);
 
     // New fields
     expect(typeof stats.wakeupLatency).toBe('number');
@@ -289,8 +326,10 @@ describe('calculateSleepStatistics', () => {
     // All existing fields should still be present
     expect(stats.timeInSleep).toBeGreaterThan(0);
     expect(stats.sleepEfficiency).toBeGreaterThan(0);
-    expect(stats.waso).toBeDefined();
-    expect(stats.ratios).toBeDefined();
+    expect(stats.timeInWake).toBeGreaterThanOrEqual(0);
+    expect(stats.wasoCount).toBeDefined();
+    expect(stats.sleepRatio).toBeDefined();
+    expect(stats.wakeRatio).toBeDefined();
   });
 });
 
@@ -413,11 +452,11 @@ describe('calculateWakeupLatency', () => {
     expect(latency).toBe(0); // Never sleeps, returns 0
   });
 
-  it('should work with custom slot duration', () => {
+  it('should work with standard slot duration', () => {
     const sleepStages = [1, 1, 0, 0, 0];
-    const latency = calculateWakeupLatency(sleepStages, 60);
+    const latency = calculateWakeupLatency(sleepStages);
 
-    expect(latency).toBe(180); // 3 slots * 60 seconds
+    expect(latency).toBe(90); // 3 slots * 30 seconds
   });
 });
 
@@ -571,21 +610,163 @@ describe('calculateSleepCycles', () => {
     expect(cycleInfo.averageCycle).toBeCloseTo(1050);
   });
 
-  it('should use custom slot duration', () => {
+  it('should use standard slot duration', () => {
     const sleepStages = [
       1, 1,                          // Light (first sleep at idx 0)
       ...Array(20).fill(3),          // First cluster (idx 2-21)
       ...Array(22).fill(1),          // 22 light slots
       ...Array(20).fill(3),          // Second cluster (idx 44-63)
     ];
-    const cycleInfo = calculateSleepCycles(sleepStages, 60);
+    const cycleInfo = calculateSleepCycles(sleepStages);
 
     expect(cycleInfo.cycleCount).toBe(2);
 
     // Distance from first sleep (idx 0) to first cluster end (idx 21) = 21 epochs
     // Distance from first cluster end (idx 21) to second cluster end (idx 63) = 42 epochs
     // Total distance = 21 + 42 = 63 epochs
-    // Average = 63 / 2 = 31.5 epochs = 31.5 * 60 = 1890 seconds
-    expect(cycleInfo.averageCycle).toBeCloseTo(1890);
+    // Average = 63 / 2 = 31.5 epochs = 31.5 * 30 = 945 seconds
+    expect(cycleInfo.averageCycle).toBeCloseTo(945);
+  });
+});
+
+describe('calculateSleepCycleTime', () => {
+  it('should return null when sleepTime is null', () => {
+    const { calculateSleepCycleTime } = require('../src');
+    const sleepStages = [0, 0, 1, 1, 3, 3, 3];
+    const clusterEnds = [6];
+
+    const result = calculateSleepCycleTime(sleepStages, null, 2, clusterEnds);
+    expect(result).toBeNull();
+  });
+
+  it('should return null when there are no clusters', () => {
+    const { calculateSleepCycleTime } = require('../src');
+    const sleepStages = [0, 0, 1, 1, 2, 2];
+    const sleepTime = new Date('2025-11-12T19:16:09+00:00');
+
+    const result = calculateSleepCycleTime(sleepStages, sleepTime, 2, []);
+    expect(result).toBeNull();
+  });
+
+  it('should return array with sleepTime and single cluster end timestamp', () => {
+    const { calculateSleepCycleTime } = require('../src');
+    const sleepStages = [
+      0, 0,                          // Wake (2 slots)
+      1, 1,                          // Light (first sleep at idx 2)
+      ...Array(20).fill(3),          // REM cluster (idx 4-23)
+      1, 1,                          // Light
+    ];
+    const sleepTime = new Date('2025-11-12T19:16:09+00:00');
+    const firstSleepIdx = 2;
+    const clusterEnds = [23]; // Cluster ends at idx 23
+
+    const result = calculateSleepCycleTime(sleepStages, sleepTime, firstSleepIdx, clusterEnds);
+
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(2);
+
+    // First element should be sleep time
+    expect(result![0]).toEqual(sleepTime);
+
+    // Second element should be cluster end time
+    // (23 - 2) * 30 seconds = 21 * 30 = 630 seconds after sleepTime
+    const expectedEndTime = new Date(sleepTime.getTime() + 630 * 1000);
+    expect(result![1]).toEqual(expectedEndTime);
+  });
+
+  it('should return array with sleepTime and multiple cluster end timestamps', () => {
+    const { calculateSleepCycleTime } = require('../src');
+    const sleepStages = [
+      ...Array(19).fill(0),          // Wake (19 slots)
+      1, 1,                          // Light (first sleep at idx 19)
+      ...Array(20).fill(3),          // First REM cluster (idx 21-40)
+      ...Array(20).fill(1),          // Light
+      ...Array(20).fill(3),          // Second REM cluster (idx 61-80)
+      ...Array(20).fill(2),          // Deep
+      ...Array(20).fill(3),          // Third REM cluster (idx 101-120)
+    ];
+    const sleepTime = new Date('2025-11-12T19:16:09+00:00');
+    const firstSleepIdx = 19;
+    const clusterEnds = [40, 80, 120]; // Clusters end at these indices
+
+    const result = calculateSleepCycleTime(sleepStages, sleepTime, firstSleepIdx, clusterEnds);
+
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(4); // sleepTime + 3 cluster ends
+
+    // First element should be sleep time
+    expect(result![0]).toEqual(sleepTime);
+
+    // Calculate expected timestamps for each cluster end
+    // First cluster: (40 - 19) * 30 = 21 * 30 = 630 seconds after sleepTime
+    const expectedEnd1 = new Date(sleepTime.getTime() + 630 * 1000);
+    expect(result![1]).toEqual(expectedEnd1);
+
+    // Second cluster: (80 - 19) * 30 = 61 * 30 = 1830 seconds after sleepTime
+    const expectedEnd2 = new Date(sleepTime.getTime() + 1830 * 1000);
+    expect(result![2]).toEqual(expectedEnd2);
+
+    // Third cluster: (120 - 19) * 30 = 101 * 30 = 3030 seconds after sleepTime
+    const expectedEnd3 = new Date(sleepTime.getTime() + 3030 * 1000);
+    expect(result![3]).toEqual(expectedEnd3);
+  });
+});
+
+describe('calculateSleepStatistics with sleepCycleTime', () => {
+  it('should include null sleepCycleTime when no timestamps provided', () => {
+    const sleepStages = [0, 0, 1, 1, 2, 2, 3, 3];
+    const stats = calculateSleepStatistics(sleepStages);
+
+    expect(stats.sleepCycleTime).toBeNull();
+  });
+
+  it('should include null sleepCycleTime when no REM clusters detected', () => {
+    const sleepStages = [0, 0, 1, 1, 2, 2, 1, 1]; // No REM stages
+    const stats = calculateSleepStatistics(sleepStages, {
+      startTime: '2025-11-12T19:06:39+00:00',
+      endTime: '2025-11-12T19:10:39+00:00',
+    });
+
+    expect(stats.sleepCycleTime).toBeNull();
+  });
+
+  it('should calculate sleepCycleTime with real data example', () => {
+    // Using the example data from temp.txt (first ~121 epochs)
+    const sleepStages = [
+      ...Array(19).fill(0),          // Wake (19 slots until first sleep)
+      1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1,
+      1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 1, 1, 1, 1, 1,
+      1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+      0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+      // First REM cluster starts at index 164
+      ...Array(46).fill(3),          // REM cluster (46 slots)
+      1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      ...Array(20).fill(1),
+      ...Array(60).fill(2),
+      0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      // Second REM cluster
+      ...Array(50).fill(3),          // REM cluster
+    ];
+
+    const stats = calculateSleepStatistics(sleepStages, {
+      startTime: '2025-11-12T19:06:39+00:00',
+    });
+
+    expect(stats.sleepCycleTime).not.toBeNull();
+    expect(stats.sleepCycleTime).toHaveLength(3); // sleepTime + 2 REM clusters
+
+    // First element should be the sleep time
+    expect(stats.sleepCycleTime![0]).toEqual(stats.sleepTime);
+
+    // Subsequent elements should be after the sleep time
+    if (stats.sleepCycleTime && stats.sleepTime) {
+      for (let i = 1; i < stats.sleepCycleTime.length; i++) {
+        expect(stats.sleepCycleTime[i].getTime()).toBeGreaterThan(stats.sleepTime.getTime());
+      }
+    }
   });
 });

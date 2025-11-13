@@ -1,12 +1,8 @@
 /**
  * Duration of each sleep stage slot in seconds
+ * Fixed at 30 seconds per Asleep API specification
  */
 export const SLOT_DURATION_SECONDS = 30;
-
-/**
- * Number of seconds in one hour
- */
-export const SECONDS_IN_ONE_HOUR = 3600;
 
 /**
  * Sleep stage enum values

@@ -14,32 +14,90 @@ import type {
   SleepMoments,
   SleepCycleInfo,
 } from './types';
+import { roundSecond, toInt } from './utils';
+
+/**
+ * Adjust stage ratios to ensure they sum to exactly 1.0
+ * Handles floating-point precision errors by iteratively adjusting ratios
+ *
+ * Algorithm:
+ * 1. Round all ratios to 2 decimal places
+ * 2. Calculate sum and error from 1.0
+ * 3. Iteratively adjust ratios by ±0.01 until sum equals 1.0
+ * 4. Priority order for adjustment: light → rem → deep → wake
+ *
+ * @param ratios Raw calculated ratios
+ * @returns Adjusted ratios that sum to exactly 1.0
+ */
+function adjustRatiosToSecond(ratios: {
+  wake: number;
+  light: number;
+  deep: number;
+  rem: number;
+}): {
+  wake: number;
+  light: number;
+  deep: number;
+  rem: number;
+  sleep: number;
+} {
+  // Round all ratios to 2 decimal places
+  let wake = roundSecond(ratios.wake);
+  let light = roundSecond(ratios.light);
+  let deep = roundSecond(ratios.deep);
+  let rem = roundSecond(ratios.rem);
+
+  // Calculate sum and error
+  let sumOfRatios = wake + light + deep + rem;
+  let error = roundSecond(sumOfRatios - 1);
+
+  // Iteratively adjust ratios until sum equals 1.0
+  // Priority: light → rem → deep → wake
+  while (error !== 0) {
+    const adjustment = error > 0 ? 0.01 : -0.01;
+
+    if (light > 0 || adjustment < 0) {
+      light = roundSecond(light - adjustment);
+    } else if (rem > 0 || adjustment < 0) {
+      rem = roundSecond(rem - adjustment);
+    } else if (deep > 0 || adjustment < 0) {
+      deep = roundSecond(deep - adjustment);
+    } else if (wake > 0 || adjustment < 0) {
+      wake = roundSecond(wake - adjustment);
+    }
+
+    error = roundSecond(error - adjustment);
+  }
+
+  // Calculate sleep ratio as 1 - wake (clamped to 0 minimum)
+  const sleep = roundSecond(Math.max(1 - wake, 0));
+
+  return { wake, light, deep, rem, sleep };
+}
 
 /**
  * Calculate breakdown of time spent in each sleep stage
  * @param sleepStages Array of sleep stage values (0=Wake, 1=Light, 2=Deep, 3=REM)
- * @param slotDuration Duration of each slot in seconds (default: 30)
  * @returns Time spent in each stage in seconds
  */
 export function calculateStageBreakdown(
-  sleepStages: number[],
-  slotDuration: number = SLOT_DURATION_SECONDS
+  sleepStages: number[]
 ): StageBreakdown {
   const breakdown: StageBreakdown = { wake: 0, light: 0, deep: 0, rem: 0 };
 
   for (const stage of sleepStages) {
     switch (stage) {
       case 0:
-        breakdown.wake += slotDuration;
+        breakdown.wake += SLOT_DURATION_SECONDS;
         break;
       case 1:
-        breakdown.light += slotDuration;
+        breakdown.light += SLOT_DURATION_SECONDS;
         break;
       case 2:
-        breakdown.deep += slotDuration;
+        breakdown.deep += SLOT_DURATION_SECONDS;
         break;
       case 3:
-        breakdown.rem += slotDuration;
+        breakdown.rem += SLOT_DURATION_SECONDS;
         break;
       // Ignore -1 (NO_DATA) and other values
     }
@@ -51,61 +109,52 @@ export function calculateStageBreakdown(
 /**
  * Calculate sleep latency (time until first non-wake stage)
  * @param sleepStages Array of sleep stage values
- * @param slotDuration Duration of each slot in seconds (default: 30)
  * @returns Sleep latency in seconds
  */
 export function calculateSleepLatency(
-  sleepStages: number[],
-  slotDuration: number = SLOT_DURATION_SECONDS
+  sleepStages: number[]
 ): number {
   let latency = 0;
   for (const stage of sleepStages) {
     if (stage !== 0) {
       break;
     }
-    latency += slotDuration;
+    latency += SLOT_DURATION_SECONDS;
   }
   return latency;
 }
 
 /**
  * Calculate latencies to reach each sleep stage
+ * Stage latencies are measured FROM SLEEP ONSET (first non-wake stage),
+ * matching Asleep backend behavior.
+ *
  * @param sleepStages Array of sleep stage values
- * @param slotDuration Duration of each slot in seconds (default: 30)
  * @returns Latencies to reach each stage in seconds
  */
 export function calculateStageLatencies(
-  sleepStages: number[],
-  slotDuration: number = SLOT_DURATION_SECONDS
+  sleepStages: number[]
 ): StageLatencies {
-  const sleepLatency = calculateSleepLatency(sleepStages, slotDuration);
+  const moments = calculateKeyMoments(sleepStages);
 
-  let lightLatency = 0;
-  let deepLatency = 0;
-  let remLatency = 0;
-  let foundLight = false;
-  let foundDeep = false;
-  let foundRem = false;
+  // If never slept, sleep latency is total duration
+  const sleepLatency = moments.firstSleepIdx !== -1
+    ? moments.firstSleepIdx * SLOT_DURATION_SECONDS
+    : sleepStages.length * SLOT_DURATION_SECONDS;
 
-  for (let i = 0; i < sleepStages.length; i++) {
-    const stage = sleepStages[i];
+  // Stage latencies are calculated from sleep onset (first non-wake stage)
+  // Formula: (first_stage_idx - first_sleep_idx) * SLOT_DURATION_SECONDS
+  const lightLatency = moments.firstLightIdx !== -1
+    ? (moments.firstLightIdx - moments.firstSleepIdx) * SLOT_DURATION_SECONDS
+    : null;
 
-    if (!foundLight && stage === 1) {
-      foundLight = true;
-    }
-    if (!foundDeep && stage === 2) {
-      foundDeep = true;
-    }
-    if (!foundRem && stage === 3) {
-      foundRem = true;
-    }
+  const deepLatency = moments.firstDeepIdx !== -1
+    ? (moments.firstDeepIdx - moments.firstSleepIdx) * SLOT_DURATION_SECONDS
+    : null;
 
-    if (!foundLight) lightLatency += slotDuration;
-    if (!foundDeep) deepLatency += slotDuration;
-    if (!foundRem) remLatency += slotDuration;
-
-    if (foundLight && foundDeep && foundRem) break;
-  }
+  const remLatency = moments.firstRemIdx !== -1
+    ? (moments.firstRemIdx - moments.firstSleepIdx) * SLOT_DURATION_SECONDS
+    : null;
 
   return {
     sleep: sleepLatency,
@@ -118,12 +167,10 @@ export function calculateStageLatencies(
 /**
  * Calculate Wake After Sleep Onset (WASO) statistics
  * @param sleepStages Array of sleep stage values
- * @param slotDuration Duration of each slot in seconds (default: 30)
  * @returns WASO statistics
  */
 export function calculateWaso(
-  sleepStages: number[],
-  slotDuration: number = SLOT_DURATION_SECONDS
+  sleepStages: number[]
 ): WasoStatistics {
   let waso = 0;
   let sleepStarted = false;
@@ -140,11 +187,11 @@ export function calculateWaso(
     if (sleepStarted) {
       if (stage === 0) {
         // Wake period after sleep onset
-        waso += slotDuration;
-        currentWasoLength += slotDuration;
+        waso += SLOT_DURATION_SECONDS;
+        currentWasoLength += SLOT_DURATION_SECONDS;
 
         // Count new wake episode (first slot of wake period)
-        if (currentWasoLength === slotDuration) {
+        if (currentWasoLength === SLOT_DURATION_SECONDS) {
           wasoCount++;
         }
       } else {
@@ -244,12 +291,10 @@ export function calculateKeyMoments(sleepStages: number[]): SleepMoments {
 /**
  * Calculate wakeup latency (time from last sleep to end of recording)
  * @param sleepStages Array of sleep stage values (0=Wake, 1=Light, 2=Deep, 3=REM, -1=NoData)
- * @param slotDuration Duration of each slot in seconds (default: 30)
  * @returns Wakeup latency in seconds
  */
 export function calculateWakeupLatency(
-  sleepStages: number[],
-  slotDuration: number = SLOT_DURATION_SECONDS
+  sleepStages: number[]
 ): number {
   const moments = calculateKeyMoments(sleepStages);
 
@@ -260,7 +305,7 @@ export function calculateWakeupLatency(
 
   // Calculate time from last sleep to end of recording
   const lastStageIdx = sleepStages.length - 1;
-  return (lastStageIdx - moments.lastSleepIdx) * slotDuration;
+  return (lastStageIdx - moments.lastSleepIdx) * SLOT_DURATION_SECONDS;
 }
 
 /**
@@ -341,18 +386,53 @@ export function calculateRemClusters(sleepStages: number[]): number[][] {
 }
 
 /**
+ * Calculate sleep cycle timestamps from sleep stages
+ * Returns an array of timestamps where:
+ * - First element is the sleep onset time (sleepTime)
+ * - Subsequent elements are the timestamps at the end of each REM cluster
+ *
+ * @param sleepStages Array of sleep stage values (0=Wake, 1=Light, 2=Deep, 3=REM, -1=NoData)
+ * @param sleepTime Sleep onset time (null if not provided or never slept)
+ * @param firstSleepIdx Index of first non-wake stage
+ * @param clusterEnds Array of indices marking the end of each REM cluster
+ * @returns Array of Date timestamps or null if no sleepTime or no clusters
+ */
+export function calculateSleepCycleTime(
+  _sleepStages: number[],
+  sleepTime: Date | null,
+  firstSleepIdx: number,
+  clusterEnds: number[]
+): Date[] | null {
+  // Return null if no sleep time or no clusters
+  if (!sleepTime || clusterEnds.length === 0) {
+    return null;
+  }
+
+  // Start with sleep onset time
+  const sleepCycleTime: Date[] = [sleepTime];
+
+  // Add timestamp for each cluster end
+  for (const clusterEnd of clusterEnds) {
+    // Calculate time offset from sleep onset to cluster end
+    const offsetSeconds = (clusterEnd - firstSleepIdx) * SLOT_DURATION_SECONDS;
+    const clusterEndTime = new Date(sleepTime.getTime() + offsetSeconds * 1000);
+    sleepCycleTime.push(clusterEndTime);
+  }
+
+  return sleepCycleTime;
+}
+
+/**
  * Calculate sleep cycle information from sleep stages
  * Sleep cycles are determined by detecting REM clusters.
  * Each REM cluster represents one complete sleep cycle.
  * Average cycle duration is calculated as the average distance between cluster starts.
  *
  * @param sleepStages Array of sleep stage values (0=Wake, 1=Light, 2=Deep, 3=REM, -1=NoData)
- * @param slotDuration Duration of each slot in seconds (default: 30)
  * @returns SleepCycleInfo with cycle count and average cycle duration
  */
 export function calculateSleepCycles(
-  sleepStages: number[],
-  slotDuration: number = SLOT_DURATION_SECONDS
+  sleepStages: number[]
 ): SleepCycleInfo {
   const clusters = calculateRemClusters(sleepStages);
   const cycleCount = clusters.length;
@@ -378,8 +458,9 @@ export function calculateSleepCycles(
   }
 
   // Average distance in epochs, then convert to seconds
+  // Use toInt() to match Python's floor(x + 0.5) rounding behavior
   const averageDistanceEpochs = totalDistance / clusterEnds.length;
-  const averageCycle = averageDistanceEpochs * slotDuration;
+  const averageCycle = toInt(averageDistanceEpochs * SLOT_DURATION_SECONDS);
 
   return {
     cycleCount,
@@ -389,27 +470,34 @@ export function calculateSleepCycles(
 
 /**
  * Calculate stage ratios (proportion of time in each stage)
+ *
+ * Calculates the proportion of time spent in each sleep stage relative to the sleep period.
+ * Applies rounding adjustment to ensure ratios sum to exactly 1.0.
+ *
  * @param breakdown Stage breakdown in seconds
- * @param timeInBed Total tracking duration in seconds
- * @returns Ratios for each stage (0-1)
+ * @param waso Wake after sleep onset in seconds
+ * @param timeInSleepPeriod Duration from sleep onset to final wake in seconds
+ * @returns Ratios for each stage (0-1), rounded to 2 decimal places and adjusted to sum to 1.0
  */
 export function calculateStageRatios(
   breakdown: StageBreakdown,
-  timeInBed: number
+  waso: number,
+  timeInSleepPeriod: number
 ): StageRatios {
-  if (timeInBed === 0) {
+  if (timeInSleepPeriod === 0) {
     return { wake: 0, light: 0, deep: 0, rem: 0, sleep: 0 };
   }
 
-  const timeInSleep = breakdown.light + breakdown.deep + breakdown.rem;
-
-  return {
-    wake: breakdown.wake / timeInBed,
-    light: breakdown.light / timeInBed,
-    deep: breakdown.deep / timeInBed,
-    rem: breakdown.rem / timeInBed,
-    sleep: timeInSleep / timeInBed,
+  // Calculate raw ratios
+  const rawRatios = {
+    wake: waso / timeInSleepPeriod,
+    light: breakdown.light / timeInSleepPeriod,
+    deep: breakdown.deep / timeInSleepPeriod,
+    rem: breakdown.rem / timeInSleepPeriod,
   };
+
+  // Apply rounding adjustment to ensure ratios sum to exactly 1.0
+  return adjustRatiosToSecond(rawRatios);
 }
 
 /**
@@ -422,47 +510,131 @@ export function calculateSleepStatistics(
   sleepStages: number[],
   options: CalculationOptions = {}
 ): SleepStatistics {
-  const slotDuration = options.slotDuration ?? SLOT_DURATION_SECONDS;
+  // Parse start and end times if provided
+  let startTime: Date | null = null;
+  let endTime: Date | null = null;
+  let sleepTime: Date | null = null;
+  let wakeTime: Date | null = null;
+
+  if (options.startTime) {
+    startTime = typeof options.startTime === 'string'
+      ? new Date(options.startTime)
+      : options.startTime;
+  }
+
+  if (options.endTime) {
+    endTime = typeof options.endTime === 'string'
+      ? new Date(options.endTime)
+      : options.endTime;
+  }
+
+  // Calculate timeInBed from actual timestamps if both available, otherwise from array length
+  let timeInBed: number;
+  if (startTime && endTime) {
+    timeInBed = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+  } else {
+    timeInBed = sleepStages.length * SLOT_DURATION_SECONDS;
+  }
 
   // Calculate stage breakdown
-  const stageBreakdown = calculateStageBreakdown(sleepStages, slotDuration);
+  const stageBreakdown = calculateStageBreakdown(sleepStages);
 
   // Calculate derived metrics
-  const timeInBed = sleepStages.length * slotDuration;
   const timeInSleep = stageBreakdown.light + stageBreakdown.deep + stageBreakdown.rem;
-  const sleepEfficiency = timeInBed > 0 ? timeInSleep / timeInBed : 0;
+  const sleepEfficiency = timeInBed > 0 ? roundSecond(timeInSleep / timeInBed) : 0;
 
   // Calculate latencies
-  const latencies = calculateStageLatencies(sleepStages, slotDuration);
-  const wakeupLatency = calculateWakeupLatency(sleepStages, slotDuration);
+  const latencies = calculateStageLatencies(sleepStages);
+  const wakeupLatency = calculateWakeupLatency(sleepStages);
 
   // Calculate WASO
-  const waso = calculateWaso(sleepStages, slotDuration);
-
-  // Calculate ratios
-  const ratios = calculateStageRatios(stageBreakdown, timeInBed);
+  const waso = calculateWaso(sleepStages);
 
   // Calculate time in sleep period (sleep + wake after sleep onset)
   const timeInSleepPeriod = timeInSleep + waso.waso;
 
+  // Calculate ratios
+  const ratios = calculateStageRatios(stageBreakdown, waso.waso, timeInSleepPeriod);
+
   // Calculate sleep cycles
-  const sleepCycles = calculateSleepCycles(sleepStages, slotDuration);
+  const sleepCycles = calculateSleepCycles(sleepStages);
+
+  // Calculate sleep cycle timestamps
+  const moments = calculateKeyMoments(sleepStages);
+  const clusters = calculateRemClusters(sleepStages);
+  const clusterEnds = clusters.map(cluster => cluster[1]);
+
+  // Calculate sleep cycle time - will be set after sleepTime is calculated
+  let sleepCycleTime: Date[] | null = null;
+
+  // Calculate time points if start/end times provided
+  if (startTime && endTime) {
+    // Only calculate sleepTime/wakeTime if actually slept
+    if (latencies.sleep < timeInBed) {
+      sleepTime = new Date(startTime.getTime() + latencies.sleep * 1000);
+      wakeTime = new Date(endTime.getTime() - wakeupLatency * 1000);
+      // Calculate sleep cycle timestamps now that we have sleepTime
+      sleepCycleTime = calculateSleepCycleTime(sleepStages, sleepTime, moments.firstSleepIdx, clusterEnds);
+    }
+  } else if (startTime) {
+    // If only startTime provided, calculate endTime from timeInBed
+    endTime = new Date(startTime.getTime() + timeInBed * 1000);
+
+    if (latencies.sleep < timeInBed) {
+      sleepTime = new Date(startTime.getTime() + latencies.sleep * 1000);
+      wakeTime = new Date(endTime.getTime() - wakeupLatency * 1000);
+      // Calculate sleep cycle timestamps now that we have sleepTime
+      sleepCycleTime = calculateSleepCycleTime(sleepStages, sleepTime, moments.firstSleepIdx, clusterEnds);
+    }
+  } else if (endTime) {
+    // If only endTime provided, calculate startTime from timeInBed
+    startTime = new Date(endTime.getTime() - timeInBed * 1000);
+
+    if (latencies.sleep < timeInBed) {
+      sleepTime = new Date(startTime.getTime() + latencies.sleep * 1000);
+      wakeTime = new Date(endTime.getTime() - wakeupLatency * 1000);
+      // Calculate sleep cycle timestamps now that we have sleepTime
+      sleepCycleTime = calculateSleepCycleTime(sleepStages, sleepTime, moments.firstSleepIdx, clusterEnds);
+    }
+  }
 
   return {
+    // Timestamps
+    startTime,
+    endTime,
+    sleepTime,
+    wakeTime,
+    sleepCycleTime,
+
+    // Time durations (in seconds)
     timeInBed,
+    timeInSleepPeriod,
     timeInSleep,
-    timeInWake: stageBreakdown.wake,
-    timeInDeep: stageBreakdown.deep,
+    timeInWake: waso.waso,
     timeInLight: stageBreakdown.light,
+    timeInDeep: stageBreakdown.deep,
     timeInRem: stageBreakdown.rem,
-    sleepEfficiency,
+
+    // Latencies (in seconds)
     sleepLatency: latencies.sleep,
     wakeupLatency,
-    latencies,
-    ratios,
-    waso,
-    timeInSleepPeriod,
-    stageBreakdown,
+    lightLatency: latencies.light,
+    deepLatency: latencies.deep,
+    remLatency: latencies.rem,
+
+    // Efficiency and ratios (0-1)
+    sleepEfficiency,
+    sleepRatio: ratios.sleep,
+    wakeRatio: ratios.wake,
+    lightRatio: ratios.light,
+    deepRatio: ratios.deep,
+    remRatio: ratios.rem,
+
+    // Wake After Sleep Onset (WASO) metrics
+    wasoCount: waso.wasoCount,
+    longestWaso: waso.longestWaso,
+
+    // Sleep cycles
     sleepCycleCount: sleepCycles.cycleCount,
     averageSleepCycle: sleepCycles.averageCycle,
   };

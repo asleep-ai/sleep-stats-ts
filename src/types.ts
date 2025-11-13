@@ -21,16 +21,17 @@ export interface StageBreakdown {
 
 /**
  * Latency to reach each sleep stage (in seconds)
+ * Stage latencies are measured from sleep onset, not from recording start
  */
 export interface StageLatencies {
   /** Time until first non-wake stage (sleep onset) */
   sleep: number;
-  /** Time until first light sleep stage */
-  light: number;
-  /** Time until first deep sleep stage */
-  deep: number;
-  /** Time until first REM sleep stage */
-  rem: number;
+  /** Time from sleep onset to first light sleep stage (null if never reached) */
+  light: number | null;
+  /** Time from sleep onset to first deep sleep stage (null if never reached) */
+  deep: number | null;
+  /** Time from sleep onset to first REM sleep stage (null if never reached) */
+  rem: number | null;
 }
 
 /**
@@ -93,44 +94,70 @@ export interface SleepCycleInfo {
 
 /**
  * Complete sleep statistics calculated from hypnogram
+ * Matches backend response structure
  */
 export interface SleepStatistics {
+  // Timestamps
+  /** Recording start time (null if not provided) */
+  startTime: Date | null;
+  /** Recording end time (null if not provided) */
+  endTime: Date | null;
+  /** Sleep onset time - start + sleep_latency (null if not provided or never slept) */
+  sleepTime: Date | null;
+  /** Final wake time - end - wakeup_latency (null if not provided or never slept) */
+  wakeTime: Date | null;
+  /** Array of timestamps marking the start of sleep and end of each REM cluster (null if no cycles) */
+  sleepCycleTime: Date[] | null;
+
+  // Time durations (in seconds)
   /** Total tracking duration (in seconds) */
   timeInBed: number;
+  /** Time in sleep period from sleep onset to final wake (timeInSleep + timeInWake) (in seconds) */
+  timeInSleepPeriod: number;
   /** Total time asleep - light + deep + rem (in seconds) */
   timeInSleep: number;
-  /** Total time awake (in seconds) */
+  /** Total time awake after sleep onset (WASO) (in seconds) */
   timeInWake: number;
-  /** Time in deep sleep (in seconds) */
-  timeInDeep: number;
   /** Time in light sleep (in seconds) */
   timeInLight: number;
+  /** Time in deep sleep (in seconds) */
+  timeInDeep: number;
   /** Time in REM sleep (in seconds) */
   timeInRem: number;
 
-  /** Sleep efficiency (timeInSleep / timeInBed), range 0-1 */
-  sleepEfficiency: number;
-
-  /** Time until first non-wake stage (in seconds) */
+  // Latencies (in seconds)
+  /** Time until first non-wake stage (sleep onset) (in seconds) */
   sleepLatency: number;
   /** Time from last sleep to end of recording (in seconds) */
   wakeupLatency: number;
+  /** Time from sleep onset to first light sleep stage (null if never reached) */
+  lightLatency: number | null;
+  /** Time from sleep onset to first deep sleep stage (null if never reached) */
+  deepLatency: number | null;
+  /** Time from sleep onset to first REM sleep stage (null if never reached) */
+  remLatency: number | null;
 
-  /** Latencies to reach each sleep stage */
-  latencies: StageLatencies;
+  // Efficiency and ratios (0-1)
+  /** Sleep efficiency (timeInSleep / timeInBed) */
+  sleepEfficiency: number;
+  /** Proportion of sleep period spent asleep (light + deep + rem) */
+  sleepRatio: number;
+  /** Proportion of sleep period spent awake (WASO ratio) */
+  wakeRatio: number;
+  /** Proportion of sleep period spent in light sleep */
+  lightRatio: number;
+  /** Proportion of sleep period spent in deep sleep */
+  deepRatio: number;
+  /** Proportion of sleep period spent in REM sleep */
+  remRatio: number;
 
-  /** Ratios of time spent in each stage */
-  ratios: StageRatios;
+  // Wake After Sleep Onset (WASO) metrics
+  /** Number of wake episodes after sleep onset */
+  wasoCount: number;
+  /** Duration of longest wake episode (in seconds) */
+  longestWaso: number;
 
-  /** Wake After Sleep Onset statistics */
-  waso: WasoStatistics;
-
-  /** Time in sleep period (timeInSleep + waso) */
-  timeInSleepPeriod: number;
-
-  /** Raw stage breakdown (same as timeIn* values) */
-  stageBreakdown: StageBreakdown;
-
+  // Sleep cycles
   /** Number of complete sleep cycles detected */
   sleepCycleCount: number;
   /** Average sleep cycle duration in seconds (null if no cycles) */
@@ -141,6 +168,8 @@ export interface SleepStatistics {
  * Options for statistics calculation
  */
 export interface CalculationOptions {
-  /** Slot duration in seconds (default: 30) */
-  slotDuration?: number;
+  /** Recording start time as Date object or ISO 8601 string */
+  startTime?: Date | string;
+  /** Recording end time as Date object or ISO 8601 string */
+  endTime?: Date | string;
 }

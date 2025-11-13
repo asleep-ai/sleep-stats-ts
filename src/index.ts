@@ -31,6 +31,7 @@ export {
   calculateWakeupLatency,
   calculateRemClusters,
   calculateSleepCycles,
+  calculateSleepCycleTime,
   calculateStageRatios,
   calculateSleepStatistics,
 } from './calculator';
