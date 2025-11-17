@@ -48,7 +48,7 @@ function adjustRatiosToSecond(ratios: {
   let rem = roundSecond(ratios.rem);
 
   // Calculate sum and error
-  let sumOfRatios = wake + light + deep + rem;
+  const sumOfRatios = wake + light + deep + rem;
   let error = roundSecond(sumOfRatios - 1);
 
   // Iteratively adjust ratios until sum equals 1.0

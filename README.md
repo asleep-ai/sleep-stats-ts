@@ -390,6 +390,16 @@ npm test
 npm run dev
 ```
 
+## Publishing
+
+This package uses [semantic-release](https://github.com/semantic-release/semantic-release) for automated publishing. Releases are triggered by commit messages following [Conventional Commits](https://www.conventionalcommits.org/):
+
+- `fix: description` → Patch release (0.1.0 → 0.1.1)
+- `feat: description` → Minor release (0.1.0 → 0.2.0)
+- `feat!: description` or `BREAKING CHANGE:` → Major release (0.1.0 → 1.0.0)
+
+Releases happen automatically when changes are pushed to the main branch.
+
 ## License
 
 MIT
